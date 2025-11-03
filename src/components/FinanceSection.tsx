@@ -7,22 +7,24 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Icon from "@/components/ui/icon";
 import { DataTable, Column, Filter } from "@/components/ui/data-table";
 import { ImportExportDialog } from "@/components/ImportExportDialog";
 import { financeService } from "@/services/financeService";
 import { Transaction, TransactionType } from "@/types";
 import { toast } from "sonner";
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const FinanceSection = () => {
   const [transactions, setTransactions] = useState<Transaction[]>(financeService.getAll());
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [activeView, setActiveView] = useState<"table" | "analytics">("table");
+  const [activeView, setActiveView] = useState<"table" | "analytics" | "reports">("table");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [periodFilter, setPeriodFilter] = useState<"day" | "week" | "month" | "year">("month");
 
   const [formData, setFormData] = useState({
     type: "income" as TransactionType,
@@ -33,7 +35,9 @@ const FinanceSection = () => {
     relatedRepairId: "",
     paymentMethod: "",
     tags: [] as string[],
-    recurring: false
+    recurring: false,
+    invoiceNumber: "",
+    taxRate: 0
   });
 
   const categories = Array.from(new Set(transactions.map(t => t.category)));
@@ -131,6 +135,35 @@ const FinanceSection = () => {
     const largestIncome = Math.max(...filteredTransactions.filter(t => t.type === 'income').map(t => t.amount), 0);
     const largestExpense = Math.max(...filteredTransactions.filter(t => t.type === 'expense').map(t => t.amount), 0);
 
+    const monthlyData: { [key: string]: { income: number; expense: number; month: string } } = {};
+    transactions.forEach(t => {
+      const monthKey = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, '0')}`;
+      if (!monthlyData[monthKey]) {
+        monthlyData[monthKey] = { 
+          income: 0, 
+          expense: 0, 
+          month: new Date(t.date.getFullYear(), t.date.getMonth()).toLocaleDateString('ru-RU', { month: 'short', year: 'numeric' })
+        };
+      }
+      if (t.type === 'income') {
+        monthlyData[monthKey].income += t.amount;
+      } else {
+        monthlyData[monthKey].expense += t.amount;
+      }
+    });
+
+    const monthlyChartData = Object.values(monthlyData)
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-12)
+      .map(d => ({
+        month: d.month,
+        Доходы: d.income,
+        Расходы: d.expense,
+        Прибыль: d.income - d.expense
+      }));
+
+    const profitMargin = totalIncome > 0 ? ((balance / totalIncome) * 100).toFixed(1) : '0';
+
     return {
       totalIncome,
       totalExpense,
@@ -143,7 +176,9 @@ const FinanceSection = () => {
       avgTransactionAmount,
       largestIncome,
       largestExpense,
-      filteredCount: filteredTransactions.length
+      filteredCount: filteredTransactions.length,
+      monthlyChartData,
+      profitMargin
     };
   }, [transactions, dateFrom, dateTo, categoryFilter]);
 
@@ -202,7 +237,9 @@ const FinanceSection = () => {
       relatedRepairId: "",
       paymentMethod: "",
       tags: [],
-      recurring: false
+      recurring: false,
+      invoiceNumber: "",
+      taxRate: 0
     });
   };
 
@@ -217,7 +254,9 @@ const FinanceSection = () => {
       relatedRepairId: transaction.relatedRepairId || "",
       paymentMethod: transaction.paymentMethod || "",
       tags: (transaction as any).tags || [],
-      recurring: false
+      recurring: false,
+      invoiceNumber: (transaction as any).invoiceNumber || "",
+      taxRate: (transaction as any).taxRate || 0
     });
   };
 
@@ -242,9 +281,9 @@ const FinanceSection = () => {
             <Icon name={transaction.type === 'income' ? 'ArrowDownLeft' : 'ArrowUpRight'} 
                   className={`h-4 w-4 ${transaction.type === 'income' ? 'text-green-600' : 'text-red-600'}`} />
           </div>
-          <Badge variant={transaction.type === 'income' ? 'outline' : 'secondary'}>
+          <span className="text-sm">
             {transaction.type === 'income' ? 'Доход' : 'Расход'}
-          </Badge>
+          </span>
         </div>
       ),
       sortable: true,
@@ -304,6 +343,37 @@ const FinanceSection = () => {
       ),
       sortable: true,
       width: 'w-[140px]'
+    },
+    {
+      key: 'actions',
+      label: 'Действия',
+      render: (transaction) => (
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => openEdit(transaction)}
+          >
+            <Icon name="Edit" className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleDuplicate(transaction)}
+          >
+            <Icon name="Copy" className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleDelete(transaction.id)}
+            className="text-destructive hover:text-destructive"
+          >
+            <Icon name="Trash2" className="h-4 w-4" />
+          </Button>
+        </div>
+      ),
+      width: 'w-[140px]'
     }
   ];
 
@@ -325,456 +395,541 @@ const FinanceSection = () => {
 
   const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#ef4444', '#8b5cf6', '#ec4899'];
 
-  const TransactionForm = () => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <Label>Тип операции</Label>
-          <Select value={formData.type} onValueChange={(val) => setFormData({...formData, type: val as TransactionType})}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="income">
-                <div className="flex items-center gap-2">
-                  <Icon name="ArrowDownLeft" className="h-4 w-4 text-green-600" />
-                  Доход
-                </div>
-              </SelectItem>
-              <SelectItem value="expense">
-                <div className="flex items-center gap-2">
-                  <Icon name="ArrowUpRight" className="h-4 w-4 text-red-600" />
-                  Расход
-                </div>
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        
-        <div>
-          <Label>Сумма *</Label>
-          <Input 
-            type="number"
-            min="0"
-            value={formData.amount} 
-            onChange={(e) => setFormData({...formData, amount: Number(e.target.value)})} 
-            placeholder="0" 
-          />
-        </div>
-      </div>
-      
-      <div>
-        <Label>Категория *</Label>
-        <div className="flex gap-2">
-          <Select value={formData.category} onValueChange={(val) => setFormData({...formData, category: val})}>
-            <SelectTrigger>
-              <SelectValue placeholder="Выберите или введите новую" />
-            </SelectTrigger>
-            <SelectContent>
-              {categories.map(cat => (
-                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input 
-            value={formData.category} 
-            onChange={(e) => setFormData({...formData, category: e.target.value})} 
-            placeholder="Или введите новую" 
-            className="flex-1"
-          />
-        </div>
-      </div>
-      
-      <div>
-        <Label>Описание</Label>
-        <Textarea 
-          value={formData.description} 
-          onChange={(e) => setFormData({...formData, description: e.target.value})} 
-          placeholder="Детальное описание операции" 
-          rows={3}
-        />
-      </div>
-      
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <Label>Дата</Label>
-          <Input 
-            type="date"
-            value={formData.date.toISOString().split('T')[0]} 
-            onChange={(e) => setFormData({...formData, date: new Date(e.target.value)})} 
-          />
-        </div>
-        
-        <div>
-          <Label>Способ оплаты</Label>
-          <div className="flex gap-2">
-            <Select value={formData.paymentMethod} onValueChange={(val) => setFormData({...formData, paymentMethod: val})}>
-              <SelectTrigger>
-                <SelectValue placeholder="Выберите" />
-              </SelectTrigger>
-              <SelectContent>
-                {paymentMethods.map(method => (
-                  <SelectItem key={method} value={method}>{method}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input 
-              value={formData.paymentMethod} 
-              onChange={(e) => setFormData({...formData, paymentMethod: e.target.value})} 
-              placeholder="Или новый" 
-            />
-          </div>
-        </div>
-      </div>
-      
-      <div>
-        <Label>ID связанной заявки</Label>
-        <Input 
-          value={formData.relatedRepairId} 
-          onChange={(e) => setFormData({...formData, relatedRepairId: e.target.value})} 
-          placeholder="REP-001" 
-        />
-      </div>
-
-      {formData.amount > 0 && (
-        <div className={`p-4 rounded-lg ${formData.type === 'income' ? 'bg-green-50' : 'bg-red-50'}`}>
-          <div className="text-sm text-muted-foreground">Итоговая сумма</div>
-          <div className={`text-3xl font-bold ${formData.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
-            {formData.type === 'income' ? '+' : '-'}₽{formData.amount.toLocaleString()}
-          </div>
-        </div>
-      )}
-      
-      <Button onClick={editingTransaction ? handleUpdate : handleCreate} className="w-full">
-        {editingTransaction ? "Сохранить изменения" : "Создать операцию"}
-      </Button>
-    </div>
-  );
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Финансы</h2>
-          <p className="text-muted-foreground">Учет доходов, расходов и финансовая аналитика</p>
+          <p className="text-muted-foreground">Управление доходами и расходами</p>
         </div>
         <div className="flex gap-2">
-          <ImportExportDialog
-            data={transactions}
-            filename="finance"
-            title="Финансы"
-            columns={[
-              { key: 'id', label: 'ID' },
-              { key: 'date', label: 'Дата' },
-              { key: 'type', label: 'Тип' },
-              { key: 'category', label: 'Категория' },
-              { key: 'description', label: 'Описание' },
-              { key: 'amount', label: 'Сумма' },
-              { key: 'paymentMethod', label: 'Способ оплаты' },
-              { key: 'relatedRepairId', label: 'ID заявки' },
-            ]}
+          <ImportExportDialog 
+            data={transactions} 
             onImport={(data) => {
-              toast.success(`Импортировано ${data.length} операций`);
+              data.forEach(item => financeService.create(item));
+              setTransactions(financeService.getAll());
             }}
+            entity="finance"
           />
-          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+          <Dialog open={isCreateOpen || !!editingTransaction} onOpenChange={(open) => {
+            if (!open) {
+              setIsCreateOpen(false);
+              setEditingTransaction(null);
+              resetForm();
+            }
+          }}>
             <DialogTrigger asChild>
-              <Button className="gap-2" onClick={() => { resetForm(); setEditingTransaction(null); }}>
+              <Button className="gap-2" onClick={() => setIsCreateOpen(true)}>
                 <Icon name="Plus" className="h-4 w-4" />
                 Новая операция
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>Новая финансовая операция</DialogTitle>
+                <DialogTitle>{editingTransaction ? "Редактировать операцию" : "Новая финансовая операция"}</DialogTitle>
               </DialogHeader>
-              <TransactionForm />
+              <Tabs defaultValue="main" className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="main">Основное</TabsTrigger>
+                  <TabsTrigger value="additional">Дополнительно</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="main" className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Тип операции *</Label>
+                      <Select value={formData.type} onValueChange={(val) => setFormData({...formData, type: val as TransactionType})}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="income">
+                            <div className="flex items-center gap-2">
+                              <Icon name="ArrowDownLeft" className="h-4 w-4 text-green-600" />
+                              Доход
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="expense">
+                            <div className="flex items-center gap-2">
+                              <Icon name="ArrowUpRight" className="h-4 w-4 text-red-600" />
+                              Расход
+                            </div>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    
+                    <div>
+                      <Label>Категория *</Label>
+                      <Input 
+                        value={formData.category} 
+                        onChange={(e) => setFormData({...formData, category: e.target.value})} 
+                        placeholder="Ремонт, Закупка, Зарплата..." 
+                        list="categories"
+                      />
+                      <datalist id="categories">
+                        {categories.map(cat => <option key={cat} value={cat} />)}
+                      </datalist>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Сумма *</Label>
+                    <Input 
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={formData.amount} 
+                      onChange={(e) => setFormData({...formData, amount: Number(e.target.value)})} 
+                      placeholder="0.00" 
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Описание</Label>
+                    <Textarea 
+                      value={formData.description} 
+                      onChange={(e) => setFormData({...formData, description: e.target.value})} 
+                      placeholder="Подробное описание операции" 
+                      rows={3}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Дата</Label>
+                      <Input 
+                        type="date"
+                        value={formData.date.toISOString().split('T')[0]} 
+                        onChange={(e) => setFormData({...formData, date: new Date(e.target.value)})} 
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Способ оплаты</Label>
+                      <Input 
+                        value={formData.paymentMethod} 
+                        onChange={(e) => setFormData({...formData, paymentMethod: e.target.value})} 
+                        placeholder="Наличные, Карта..." 
+                        list="payment-methods"
+                      />
+                      <datalist id="payment-methods">
+                        {paymentMethods.map(method => <option key={method} value={method} />)}
+                        <option value="Наличные" />
+                        <option value="Карта" />
+                        <option value="Перевод" />
+                        <option value="Онлайн" />
+                      </datalist>
+                    </div>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="additional" className="space-y-4">
+                  <div>
+                    <Label>Связанная заявка</Label>
+                    <Input 
+                      value={formData.relatedRepairId} 
+                      onChange={(e) => setFormData({...formData, relatedRepairId: e.target.value})} 
+                      placeholder="ID заявки на ремонт" 
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Номер счета/накладной</Label>
+                    <Input 
+                      value={formData.invoiceNumber} 
+                      onChange={(e) => setFormData({...formData, invoiceNumber: e.target.value})} 
+                      placeholder="INV-2024-001" 
+                    />
+                  </div>
+
+                  <div>
+                    <Label>НДС (%)</Label>
+                    <Input 
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={formData.taxRate} 
+                      onChange={(e) => setFormData({...formData, taxRate: Number(e.target.value)})} 
+                      placeholder="20" 
+                    />
+                  </div>
+
+                  {formData.taxRate > 0 && formData.amount > 0 && (
+                    <Card className="bg-muted">
+                      <CardContent className="p-4 space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span>Сумма без НДС:</span>
+                          <span className="font-medium">₽{(formData.amount / (1 + formData.taxRate / 100)).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>НДС {formData.taxRate}%:</span>
+                          <span className="font-medium">₽{(formData.amount - (formData.amount / (1 + formData.taxRate / 100))).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between font-bold border-t pt-2">
+                          <span>Итого:</span>
+                          <span>₽{formData.amount.toFixed(2)}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </TabsContent>
+              </Tabs>
+
+              <div className="flex gap-2 justify-end">
+                <Button variant="outline" onClick={() => {
+                  setIsCreateOpen(false);
+                  setEditingTransaction(null);
+                  resetForm();
+                }}>
+                  Отмена
+                </Button>
+                <Button onClick={editingTransaction ? handleUpdate : handleCreate}>
+                  {editingTransaction ? "Сохранить" : "Создать"}
+                </Button>
+              </div>
             </DialogContent>
           </Dialog>
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
-        <Card className="hover:shadow-lg transition-shadow">
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Общий доход</CardTitle>
+            <CardTitle className="text-sm font-medium">Доходы</CardTitle>
             <Icon name="TrendingUp" className="h-5 w-5 text-green-600" />
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-green-600">₽{financeStats.totalIncome.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {dateFrom || dateTo ? 'За период' : 'За всё время'}
+              За период
             </p>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-lg transition-shadow">
+
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Общие расходы</CardTitle>
+            <CardTitle className="text-sm font-medium">Расходы</CardTitle>
             <Icon name="TrendingDown" className="h-5 w-5 text-red-600" />
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-red-600">₽{financeStats.totalExpense.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {dateFrom || dateTo ? 'За период' : 'За всё время'}
+              За период
             </p>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-lg transition-shadow">
+
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Баланс</CardTitle>
+            <CardTitle className="text-sm font-medium">Прибыль</CardTitle>
             <Icon name="DollarSign" className="h-5 w-5 text-primary" />
           </CardHeader>
           <CardContent>
             <div className={`text-3xl font-bold ${financeStats.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ₽{financeStats.balance.toLocaleString()}
+              {financeStats.balance >= 0 ? '+' : ''}₽{financeStats.balance.toLocaleString()}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {financeStats.balance >= 0 ? "Прибыль" : "Убыток"}
+              Маржа: {financeStats.profitMargin}%
             </p>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-lg transition-shadow">
+
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Операций</CardTitle>
-            <Icon name="FileText" className="h-5 w-5 text-primary" />
+            <CardTitle className="text-sm font-medium">Средний чек</CardTitle>
+            <Icon name="Receipt" className="h-5 w-5 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{financeStats.filteredCount}</div>
+            <div className="text-3xl font-bold">₽{financeStats.avgTransactionAmount.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {dateFrom || dateTo ? 'Найдено' : 'Всего'}
+              {financeStats.filteredCount} операций
             </p>
           </CardContent>
         </Card>
       </div>
 
-      <div className="flex gap-2 border-b">
-        <Button 
-          variant={activeView === "table" ? "default" : "ghost"}
-          onClick={() => setActiveView("table")}
-        >
-          <Icon name="Table" className="h-4 w-4 mr-2" />
-          Таблица
-        </Button>
-        <Button 
-          variant={activeView === "analytics" ? "default" : "ghost"}
-          onClick={() => setActiveView("analytics")}
-        >
-          <Icon name="BarChart3" className="h-4 w-4 mr-2" />
-          Аналитика
-        </Button>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex gap-2">
+          <Button
+            variant={activeView === "table" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveView("table")}
+          >
+            <Icon name="List" className="h-4 w-4 mr-2" />
+            Таблица
+          </Button>
+          <Button
+            variant={activeView === "analytics" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveView("analytics")}
+          >
+            <Icon name="BarChart3" className="h-4 w-4 mr-2" />
+            Аналитика
+          </Button>
+          <Button
+            variant={activeView === "reports" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setActiveView("reports")}
+          >
+            <Icon name="FileText" className="h-4 w-4 mr-2" />
+            Отчёты
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Input 
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="w-[150px]"
+            placeholder="От"
+          />
+          <span className="text-muted-foreground">—</span>
+          <Input 
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="w-[150px]"
+            placeholder="До"
+          />
+          {(dateFrom || dateTo) && (
+            <Button variant="ghost" size="sm" onClick={() => { setDateFrom(""); setDateTo(""); }}>
+              <Icon name="X" className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {activeView === "table" && (
-        <div className="space-y-4">
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <Label>От даты</Label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <div className="flex-1">
-              <Label>До даты</Label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </div>
-            <div className="flex-1">
-              <Label>Категория</Label>
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Все категории" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">Все категории</SelectItem>
-                  {categories.map(cat => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {(dateFrom || dateTo || categoryFilter) && (
-              <div className="flex items-end">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setDateFrom("");
-                    setDateTo("");
-                    setCategoryFilter("");
-                  }}
-                >
-                  <Icon name="X" className="h-4 w-4 mr-2" />
-                  Сбросить
-                </Button>
-              </div>
-            )}
-          </div>
-
+        <Card>
           <DataTable
-            data={transactions.filter(t => {
-              if (dateFrom && t.date < new Date(dateFrom)) return false;
-              if (dateTo && t.date > new Date(dateTo)) return false;
-              if (categoryFilter && t.category !== categoryFilter) return false;
-              return true;
-            })}
+            data={transactions}
             columns={columns}
             filters={filters}
-            searchKeys={['description', 'category', 'relatedRepairId', 'paymentMethod']}
-            searchPlaceholder="Поиск по описанию, категории, ID заявки..."
-            renderActions={(transaction) => (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleDuplicate(transaction)}
-                  title="Дублировать"
-                >
-                  <Icon name="Copy" className="h-4 w-4" />
-                </Button>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button size="sm" variant="ghost" onClick={() => openEdit(transaction)}>
-                      <Icon name="Edit" className="h-4 w-4" />
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>Редактировать операцию</DialogTitle>
-                    </DialogHeader>
-                    <TransactionForm />
-                  </DialogContent>
-                </Dialog>
-                <Button size="sm" variant="ghost" onClick={() => handleDelete(transaction.id)}>
-                  <Icon name="Trash2" className="h-4 w-4" />
-                </Button>
-              </>
-            )}
-            emptyMessage="Нет финансовых операций"
+            searchable
+            searchPlaceholder="Поиск по описанию..."
           />
-        </div>
+        </Card>
       )}
 
       {activeView === "analytics" && (
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Динамика доходов и расходов</CardTitle>
-              <CardDescription>За последние 30 дней</CardDescription>
+              <CardTitle>Динамика за месяц</CardTitle>
+              <CardDescription>Ежедневные доходы и расходы</CardDescription>
             </CardHeader>
             <CardContent>
-              {financeStats.chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={financeStats.chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="Доходы" stroke="#10b981" strokeWidth={2} />
-                    <Line type="monotone" dataKey="Расходы" stroke="#ef4444" strokeWidth={2} />
-                    <Line type="monotone" dataKey="Баланс" stroke="#3b82f6" strokeWidth={2} />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  Недостаточно данных для построения графика
-                </div>
-              )}
+              <ResponsiveContainer width="100%" height={350}>
+                <AreaChart data={financeStats.chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => `₽${Number(value).toLocaleString()}`} />
+                  <Legend />
+                  <Area type="monotone" dataKey="Доходы" stackId="1" stroke="#10b981" fill="#10b981" fillOpacity={0.6} />
+                  <Area type="monotone" dataKey="Расходы" stackId="2" stroke="#ef4444" fill="#ef4444" fillOpacity={0.6} />
+                </AreaChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
 
           <div className="grid gap-6 md:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>Доходы и расходы по категориям</CardTitle>
-                <CardDescription>Сравнение категорий</CardDescription>
+                <CardTitle>По категориям</CardTitle>
+                <CardDescription>Доходы и расходы по категориям</CardDescription>
               </CardHeader>
               <CardContent>
-                {financeStats.categoryChartData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={financeStats.categoryChartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" />
-                      <YAxis />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="income" name="Доход" fill="#10b981" />
-                      <Bar dataKey="expense" name="Расход" fill="#ef4444" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    Нет данных по категориям
-                  </div>
-                )}
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={financeStats.categoryChartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip formatter={(value) => `₽${Number(value).toLocaleString()}`} />
+                    <Legend />
+                    <Bar dataKey="income" name="Доходы" fill="#10b981" />
+                    <Bar dataKey="expense" name="Расходы" fill="#ef4444" />
+                  </BarChart>
+                </ResponsiveContainer>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Распределение по способам оплаты</CardTitle>
-                <CardDescription>Все операции</CardDescription>
+                <CardTitle>Способы оплаты</CardTitle>
+                <CardDescription>Распределение по методам оплаты</CardDescription>
               </CardHeader>
               <CardContent>
-                {financeStats.paymentMethodData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <PieChart>
-                      <Pie
-                        data={financeStats.paymentMethodData}
-                        cx="50%"
-                        cy="50%"
-                        labelLine={false}
-                        label={(entry) => `${entry.name}: ₽${entry.value.toLocaleString()}`}
-                        outerRadius={80}
-                        fill="#8884d8"
-                        dataKey="value"
-                      >
-                        {financeStats.paymentMethodData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    Нет данных по способам оплаты
-                  </div>
-                )}
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={financeStats.paymentMethodData}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={(entry) => `${entry.name}: ₽${entry.value.toLocaleString()}`}
+                      outerRadius={100}
+                      fill="#8884d8"
+                      dataKey="value"
+                    >
+                      {financeStats.paymentMethodData.map((_, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value) => `₽${Number(value).toLocaleString()}`} />
+                  </PieChart>
+                </ResponsiveContainer>
               </CardContent>
             </Card>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader>
+              <CardTitle>Годовая динамика</CardTitle>
+              <CardDescription>Помесячная статистика за последние 12 месяцев</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={350}>
+                <LineChart data={financeStats.monthlyChartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => `₽${Number(value).toLocaleString()}`} />
+                  <Legend />
+                  <Line type="monotone" dataKey="Доходы" stroke="#10b981" strokeWidth={2} />
+                  <Line type="monotone" dataKey="Расходы" stroke="#ef4444" strokeWidth={2} />
+                  <Line type="monotone" dataKey="Прибыль" stroke="#3b82f6" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {activeView === "reports" && (
+        <div className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             <Card>
               <CardHeader>
-                <CardTitle>Средний чек</CardTitle>
+                <CardTitle className="text-sm">Крупнейший доход</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold">₽{financeStats.avgTransactionAmount.toLocaleString()}</div>
-                <p className="text-sm text-muted-foreground mt-1">На операцию</p>
+                <div className="text-3xl font-bold text-green-600">
+                  ₽{financeStats.largestIncome.toLocaleString()}
+                </div>
               </CardContent>
             </Card>
+
             <Card>
               <CardHeader>
-                <CardTitle>Максимальный доход</CardTitle>
+                <CardTitle className="text-sm">Крупнейший расход</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-green-600">₽{financeStats.largestIncome.toLocaleString()}</div>
-                <p className="text-sm text-muted-foreground mt-1">Самая крупная операция</p>
+                <div className="text-3xl font-bold text-red-600">
+                  ₽{financeStats.largestExpense.toLocaleString()}
+                </div>
               </CardContent>
             </Card>
+
             <Card>
               <CardHeader>
-                <CardTitle>Максимальный расход</CardTitle>
+                <CardTitle className="text-sm">Рентабельность</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-red-600">₽{financeStats.largestExpense.toLocaleString()}</div>
-                <p className="text-sm text-muted-foreground mt-1">Самая крупная операция</p>
+                <div className={`text-3xl font-bold ${Number(financeStats.profitMargin) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {financeStats.profitMargin}%
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Детали по категориям</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {Object.entries(financeStats.byCategory).map(([cat, data]) => (
+                    <div key={cat} className="p-3 bg-muted rounded-lg space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium">{cat}</span>
+                        <span className={`font-bold ${data.income - data.expense >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {data.income - data.expense >= 0 ? '+' : ''}₽{(data.income - data.expense).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div className="text-green-600">
+                          Доходы: ₽{data.income.toLocaleString()}
+                        </div>
+                        <div className="text-red-600">
+                          Расходы: ₽{data.expense.toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Сводка</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                    <div>
+                      <div className="text-sm text-green-800">Всего доходов</div>
+                      <div className="text-2xl font-bold text-green-600">₽{financeStats.totalIncome.toLocaleString()}</div>
+                    </div>
+                    <Icon name="TrendingUp" className="h-10 w-10 text-green-500" />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
+                    <div>
+                      <div className="text-sm text-red-800">Всего расходов</div>
+                      <div className="text-2xl font-bold text-red-600">₽{financeStats.totalExpense.toLocaleString()}</div>
+                    </div>
+                    <Icon name="TrendingDown" className="h-10 w-10 text-red-500" />
+                  </div>
+
+                  <div className={`flex items-center justify-between p-3 rounded-lg ${
+                    financeStats.balance >= 0 ? 'bg-blue-50' : 'bg-orange-50'
+                  }`}>
+                    <div>
+                      <div className={`text-sm ${financeStats.balance >= 0 ? 'text-blue-800' : 'text-orange-800'}`}>
+                        Чистая прибыль
+                      </div>
+                      <div className={`text-2xl font-bold ${financeStats.balance >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                        {financeStats.balance >= 0 ? '+' : ''}₽{financeStats.balance.toLocaleString()}
+                      </div>
+                    </div>
+                    <Icon name="DollarSign" className={`h-10 w-10 ${financeStats.balance >= 0 ? 'text-blue-500' : 'text-orange-500'}`} />
+                  </div>
+                </div>
+
+                <div className="border-t pt-4">
+                  <h4 className="font-medium mb-2">Ключевые показатели</h4>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Средний чек:</span>
+                      <span className="font-medium">₽{financeStats.avgTransactionAmount.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Всего операций:</span>
+                      <span className="font-medium">{transactions.length}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Маржа прибыли:</span>
+                      <span className={`font-medium ${Number(financeStats.profitMargin) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {financeStats.profitMargin}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>
